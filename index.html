@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Naval Battle</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        
+        .game-container {
+            width: 100%;
+            max-width: 500px;
+            height: 750px;
+            background: #000;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #gamesvg {
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none;
+        }
+        
+        @media (max-height: 750px) {
+            .game-container {
+                height: 100vh;
+            }
+        }
+        
+        @media (max-width: 500px) {
+            .game-container {
+                width: 100vw;
+                height: calc(100vw * 1.5);
+                max-height: 100vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <svg id="gamesvg" viewBox="0 0 500 750" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <!-- Gradients for sea and effects -->
+                <linearGradient id="seaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#001122;stop-opacity:1" />
+                    <stop offset="50%" style="stop-color:#002244;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:#003366;stop-opacity:1" />
+                </linearGradient>
+                
+                <radialGradient id="explosionGradient" cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" style="stop-color:#ffaa00;stop-opacity:1" />
+                    <stop offset="50%" style="stop-color:#ff6600;stop-opacity:0.8" />
+                    <stop offset="100%" style="stop-color:#ff0000;stop-opacity:0" />
+                </radialGradient>
+                
+                <!-- Filters -->
+                <filter id="waterRipple" x="-50%" y="-50%" width="200%" height="200%">
+                    <feTurbulence baseFrequency="0.02" numOctaves="3" result="noise" />
+                    <feDisplacementMap in="SourceGraphic" in2="noise" scale="2" />
+                </filter>
+                
+                <filter id="explosionBlur" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="3" />
+                </filter>
+                
+                <filter id="shipShadow" x="-50%" y="-50%" width="200%" height="200%">
+                    <feDropShadow dx="2" dy="2" stdDeviation="2" flood-opacity="0.3"/>
+                </filter>
+                
+                <!-- Reusable symbols -->
+                <symbol id="playerBullet" viewBox="0 0 4 8">
+                    <rect x="0" y="0" width="4" height="8" fill="#ffff00" />
+                </symbol>
+                
+                <symbol id="enemyBullet" viewBox="0 0 3 6">
+                    <rect x="0" y="0" width="3" height="6" fill="#ff4444" />
+                </symbol>
+                
+                <symbol id="smallShip" viewBox="0 0 30 20">
+                    <rect x="5" y="8" width="20" height="8" fill="#cccccc" />
+                    <rect x="8" y="4" width="14" height="4" fill="#666666" />
+                    <rect x="3" y="12" width="2" height="4" fill="#ff0000" />
+                </symbol>
+                
+                <symbol id="destroyer" viewBox="0 0 40 25">
+                    <rect x="5" y="10" width="30" height="10" fill="#bbbbbb" />
+                    <rect x="8" y="5" width="24" height="5" fill="#555555" />
+                    <rect x="15" y="0" width="10" height="5" fill="#333333" />
+                    <rect x="2" y="15" width="3" height="5" fill="#0066cc" />
+                </symbol>
+                
+                <symbol id="airplane" viewBox="0 0 25 15">
+                    <ellipse cx="12.5" cy="7.5" rx="12" ry="3" fill="#888888" />
+                    <rect x="10" y="0" width="5" height="15" fill="#666666" />
+                    <rect x="0" y="6" width="8" height="3" fill="#666666" />
+                    <rect x="17" y="6" width="8" height="3" fill="#666666" />
+                </symbol>
+            </defs>
+            
+            <!-- Game layers -->
+            <g id="bg"></g>
+            <g id="waves"></g>
+            <g id="projectiles"></g>
+            <g id="enemies"></g>
+            <g id="player"></g>
+            <g id="fx"></g>
+            <g id="ui"></g>
+        </svg>
+    </div>
+
+    <script>
+        // Farcade SDK mock (replace with actual SDK)
+        const farcade = {
+            ready: () => console.log('Game ready'),
+            gameOver: (data) => console.log('Game over:', data),
+            hapticFeedback: () => console.log('Haptic feedback'),
+            events: {
+                on: (event, callback) => {
+                    window.addEventListener(event, callback);
+                }
+            }
+        };
+
+        // Game state
+        let gameState = 'init';
+        let score = 0;
+        let playerX = 250;
+        let lastShootTime = 0;
+        let shootCooldown = 300;
+        let gameTime = 0;
+        let difficulty = 1;
+        let lastEnemySpawn = 0;
+        let enemySpawnRate = 2000;
+        let comboCount = 0;
+        let lastKillTime = 0;
+        let isMuted = false;
+        let animationId;
+
+        // Object pools
+        const pools = {
+            playerBullets: [],
+            enemyBullets: [],
+            enemies: [],
+            particles: []
+        };
+
+        // Audio context for sound generation
+        let audioContext;
+        
+        function initAudio() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                console.log('Audio not supported');
+            }
+        }
+
+        function playSound(frequency, duration, type = 'sine') {
+            if (!audioContext || isMuted) return;
+            
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+            oscillator.type = type;
+            
+            gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + duration);
+            
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + duration);
+        }
+
+        // Initialize background
+        function initBackground() {
+            const bg = document.getElementById('bg');
+            bg.innerHTML = `
+                <rect width="500" height="750" fill="url(#seaGradient)" />
+            `;
+        }
+
+        // Initialize waves
+        function initWaves() {
+            const waves = document.getElementById('waves');
+            waves.innerHTML = `
+                <path id="wave1" stroke="#334455" stroke-width="2" fill="none" filter="url(#waterRipple)" />
+                <path id="wave2" stroke="#445566" stroke-width="1.5" fill="none" filter="url(#waterRipple)" />
+                <path id="wave3" stroke="#556677" stroke-width="1" fill="none" />
+            `;
+        }
+
+        // Update wave animations
+        function updateWaves(time) {
+            const wave1 = document.getElementById('wave1');
+            const wave2 = document.getElementById('wave2');
+            const wave3 = document.getElementById('wave3');
+            
+            if (wave1) {
+                let path1 = 'M 0 ' + (200 + Math.sin(time * 0.001) * 20);
+                for (let x = 0; x <= 500; x += 20) {
+                    const y = 200 + Math.sin((time * 0.001) + (x * 0.01)) * 20;
+                    path1 += ' L ' + x + ' ' + y;
+                }
+                wave1.setAttribute('d', path1);
+            }
+            
+            if (wave2) {
+                let path2 = 'M 0 ' + (400 + Math.sin(time * 0.0015) * 15);
+                for (let x = 0; x <= 500; x += 25) {
+                    const y = 400 + Math.sin((time * 0.0015) + (x * 0.008)) * 15;
+                    path2 += ' L ' + x + ' ' + y;
+                }
+                wave2.setAttribute('d', path2);
+            }
+            
+            if (wave3) {
+                let path3 = 'M 0 ' + (600 + Math.sin(time * 0.002) * 10);
+                for (let x = 0; x <= 500; x += 30) {
+                    const y = 600 + Math.sin((time * 0.002) + (x * 0.006)) * 10;
+                    path3 += ' L ' + x + ' ' + y;
+                }
+                wave3.setAttribute('d', path3);
+            }
+        }
+
+        // Initialize player
+        function initPlayer() {
+            const player = document.getElementById('player');
+            player.innerHTML = `
+                <g id="playerShip" transform="translate(${playerX}, 620)" filter="url(#shipShadow)">
+                    <polygon points="0,30 -15,0 15,0" fill="#cccccc" />
+                    <rect x="-10" y="10" width="20" height="15" fill="#888888" />
+                    <rect x="-3" y="5" width="6" height="8" fill="#333333" />
+                    <rect x="-1" y="0" width="2" height="5" fill="#ffaa00" />
+                </g>
+            `;
+        }
+
+        // Object pool management
+        function getFromPool(poolName) {
+            const pool = pools[poolName];
+            for (let obj of pool) {
+                if (!obj.active) {
+                    obj.active = true;
+                    return obj;
+                }
+            }
+            
+            // Create new object if pool is empty
+            const newObj = { active: true, element: null };
+            pool.push(newObj);
+            return newObj;
+        }
+
+        function returnToPool(obj) {
+            obj.active = false;
+            if (obj.element && obj.element.parentNode) {
+                obj.element.parentNode.removeChild(obj.element);
+            }
+        }
+
+        // Player shooting
+        function shoot() {
+            const now = Date.now();
+            if (now - lastShootTime < shootCooldown) return;
+            
+            lastShootTime = now;
+            const bullet = getFromPool('playerBullets');
+            
+            bullet.x = playerX;
+            bullet.y = 620;
+            bullet.speed = 500;
+            
+            bullet.element = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+            bullet.element.setAttribute('href', '#playerBullet');
+            bullet.element.setAttribute('x', bullet.x - 2);
+            bullet.element.setAttribute('y', bullet.y);
+            
+            document.getElementById('projectiles').appendChild(bullet.element);
+            
+            playSound(800, 0.1);
+            farcade.hapticFeedback();
+            
+            // Randomize next cooldown
+            shootCooldown = 280 + Math.random() * 80;
+        }
+
+        // Enemy spawning
+        function spawnEnemy() {
+            const now = Date.now();
+            if (now - lastEnemySpawn < enemySpawnRate) return;
+            
+            lastEnemySpawn = now;
+            const enemy = getFromPool('enemies');
+            
+            const types = ['small', 'destroyer', 'airplane'];
+            const weights = [0.6, 0.3, 0.1];
+            let random = Math.random();
+            let type = 'small';
+            
+            for (let i = 0; i < weights.length; i++) {
+                if (random < weights[i]) {
+                    type = types[i];
+                    break;
+                }
+                random -= weights[i];
+            }
+            
+            enemy.type = type;
+            enemy.x = Math.random() * 450 + 25;
+            enemy.y = -50;
+            enemy.lastShot = 0;
+            enemy.movePattern = Math.random() < 0.5 ? 'linear' : 'sine';
+            enemy.patternTime = 0;
+            enemy.baseX = enemy.x;
+            
+            switch (type) {
+                case 'small':
+                    enemy.health = 1;
+                    enemy.speed = 80 * difficulty;
+                    enemy.shootRate = 3000;
+                    enemy.points = 100;
+                    enemy.width = 30;
+                    enemy.height = 20;
+                    enemy.symbol = '#smallShip';
+                    break;
+                case 'destroyer':
+                    enemy.health = 2;
+                    enemy.speed = 50 * difficulty;
+                    enemy.shootRate = 2000;
+                    enemy.points = 250;
+                    enemy.width = 40;
+                    enemy.height = 25;
+                    enemy.symbol = '#destroyer';
+                    break;
+                case 'airplane':
+                    enemy.health = 1;
+                    enemy.speed = 120 * difficulty;
+                    enemy.shootRate = 4000;
+                    enemy.points = 100;
+                    enemy.width = 25;
+                    enemy.height = 15;
+                    enemy.symbol = '#airplane';
+                    enemy.movePattern = 'sine';
+                    break;
+            }
+            
+            enemy.element = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+            enemy.element.setAttribute('href', enemy.symbol);
+            enemy.element.setAttribute('x', enemy.x - enemy.width / 2);
+            enemy.element.setAttribute('y', enemy.y - enemy.height / 2);
+            enemy.element.setAttribute('filter', 'url(#shipShadow)');
+            
+            document.getElementById('enemies').appendChild(enemy.element);
+        }
+
+        // Enemy shooting
+        function enemyShoot(enemy) {
+            const now = Date.now();
+            if (now - enemy.lastShot < enemy.shootRate) return;
+            
+            enemy.lastShot = now;
+            const bullet = getFromPool('enemyBullets');
+            
+            bullet.x = enemy.x;
+            bullet.y = enemy.y + enemy.height / 2;
+            bullet.speed = 350;
+            
+            bullet.element = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+            bullet.element.setAttribute('href', '#enemyBullet');
+            bullet.element.setAttribute('x', bullet.x - 1.5);
+            bullet.element.setAttribute('y', bullet.y);
+            
+            document.getElementById('projectiles').appendChild(bullet.element);
+            
+            playSound(400, 0.15, 'square');
+        }
+
+        // Collision detection
+        function checkCollisions() {
+            // Player bullets vs enemies
+            for (let bullet of pools.playerBullets) {
+                if (!bullet.active) continue;
+                
+                for (let enemy of pools.enemies) {
+                    if (!enemy.active) continue;
+                    
+                    if (bullet.x > enemy.x - enemy.width / 2 && 
+                        bullet.x < enemy.x + enemy.width / 2 &&
+                        bullet.y > enemy.y - enemy.height / 2 && 
+                        bullet.y < enemy.y + enemy.height / 2) {
+                        
+                        // Hit!
+                        returnToPool(bullet);
+                        enemy.health--;
+                        
+                        if (enemy.health <= 0) {
+                            // Enemy destroyed
+                            addScore(enemy.points);
+                            spawnExplosion(enemy.x, enemy.y);
+                            returnToPool(enemy);
+                            
+                            playSound(200, 0.3, 'sawtooth');
+                            farcade.hapticFeedback();
+                            
+                            // Combo system
+                            const now = Date.now();
+                            if (now - lastKillTime < 2000) {
+                                comboCount++;
+                            } else {
+                                comboCount = 1;
+                            }
+                            lastKillTime = now;
+                            
+                            if (comboCount >= 3) {
+                                addScore(Math.floor(enemy.points * 0.1));
+                            }
+                        } else {
+                            // Enemy damaged
+                            playSound(600, 0.1);
+                            farcade.hapticFeedback();
+                        }
+                        
+                        break;
+                    }
+                }
+            }
+            
+            // Enemy bullets vs player
+            for (let bullet of pools.enemyBullets) {
+                if (!bullet.active) continue;
+                
+                if (bullet.x > playerX - 15 && bullet.x < playerX + 15 &&
+                    bullet.y > 620 && bullet.y < 650) {
+                    
+                    // Player hit!
+                    gameOver();
+                    return;
+                }
+            }
+            
+            // Enemies vs player
+            for (let enemy of pools.enemies) {
+                if (!enemy.active) continue;
+                
+                if (enemy.x > playerX - 15 && enemy.x < playerX + 15 &&
+                    enemy.y > 620 - enemy.height / 2 && enemy.y < 650) {
+                    
+                    // Player collision!
+                    gameOver();
+                    return;
+                }
+            }
+        }
+
+        // Add score
+        function addScore(points) {
+            score += points;
+            updateUI();
+        }
+
+        // Update UI
+        function updateUI() {
+            const ui = document.getElementById('ui');
+            ui.innerHTML = `
+                <text x="20" y="40" fill="white" font-family="Arial, sans-serif" font-size="24" font-weight="bold">
+                    Score: ${score}
+                </text>
+            `;
+        }
+
+        // Spawn explosion effect
+        function spawnExplosion(x, y) {
+            for (let i = 0; i < 8; i++) {
+                const particle = getFromPool('particles');
+                
+                particle.x = x + (Math.random() - 0.5) * 20;
+                particle.y = y + (Math.random() - 0.5) * 20;
+                particle.vx = (Math.random() - 0.5) * 200;
+                particle.vy = (Math.random() - 0.5) * 200;
+                particle.life = 1;
+                particle.maxLife = 0.5 + Math.random() * 0.5;
+                particle.size = 3 + Math.random() * 5;
+                
+                particle.element = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                particle.element.setAttribute('cx', particle.x);
+                particle.element.setAttribute('cy', particle.y);
+                particle.element.setAttribute('r', particle.size);
+                particle.element.setAttribute('fill', 'url(#explosionGradient)');
+                particle.element.setAttribute('filter', 'url(#explosionBlur)');
+                
+                document.getElementById('fx').appendChild(particle.element);
+            }
+            
+            // Screen shake
+            const scene = document.getElementById('gamesvg');
+            const shake = 5;
+            scene.style.transform = `translate(${(Math.random() - 0.5) * shake}px, ${(Math.random() - 0.5) * shake}px)`;
+            setTimeout(() => {
+                scene.style.transform = 'translate(0, 0)';
+            }, 100);
+        }
+
+        // Game loop
+        function gameLoop(timestamp) {
+            if (gameState !== 'running') return;
+            
+            const deltaTime = timestamp - gameTime;
+            gameTime = timestamp;
+            
+            // Update difficulty
+            const newDifficulty = 1 + Math.floor(timestamp / 20000) * 0.1;
+            if (newDifficulty > difficulty) {
+                difficulty = newDifficulty;
+                enemySpawnRate = Math.max(500, enemySpawnRate * 0.9);
+            }
+            
+            // Update waves
+            updateWaves(timestamp);
+            
+            // Spawn enemies
+            spawnEnemy();
+            
+            // Update player bullets
+            for (let bullet of pools.playerBullets) {
+                if (!bullet.active) continue;
+                
+                bullet.y -= bullet.speed * deltaTime / 1000;
+                bullet.element.setAttribute('y', bullet.y);
+                
+                if (bullet.y < -10) {
+                    returnToPool(bullet);
+                }
+            }
+            
+            // Update enemy bullets
+            for (let bullet of pools.enemyBullets) {
+                if (!bullet.active) continue;
+                
+                bullet.y += bullet.speed * deltaTime / 1000;
+                bullet.element.setAttribute('y', bullet.y);
+                
+                if (bullet.y > 760) {
+                    returnToPool(bullet);
+                }
+            }
+            
+            // Update enemies
+            for (let enemy of pools.enemies) {
+                if (!enemy.active) continue;
+                
+                enemy.patternTime += deltaTime;
+                
+                // Movement patterns
+                if (enemy.movePattern === 'sine') {
+                    enemy.x = enemy.baseX + Math.sin(enemy.patternTime * 0.002) * 50;
+                } else if (enemy.movePattern === 'linear') {
+                    enemy.x += (Math.random() - 0.5) * enemy.speed * deltaTime / 1000 * 0.1;
+                }
+                
+                enemy.y += enemy.speed * deltaTime / 1000;
+                
+                enemy.element.setAttribute('x', enemy.x - enemy.width / 2);
+                enemy.element.setAttribute('y', enemy.y - enemy.height / 2);
+                
+                // Enemy shooting
+                if (Math.random() < 0.001) {
+                    enemyShoot(enemy);
+                }
+                
+                // Remove if off screen
+                if (enemy.y > 760) {
+                    returnToPool(enemy);
+                }
+            }
+            
+            // Update particles
+            for (let particle of pools.particles) {
+                if (!particle.active) continue;
+                
+                particle.life -= deltaTime / 1000;
+                particle.x += particle.vx * deltaTime / 1000;
+                particle.y += particle.vy * deltaTime / 1000;
+                
+                const alpha = particle.life / particle.maxLife;
+                particle.element.setAttribute('cx', particle.x);
+                particle.element.setAttribute('cy', particle.y);
+                particle.element.setAttribute('opacity', alpha);
+                particle.element.setAttribute('r', particle.size * alpha);
+                
+                if (particle.life <= 0) {
+                    returnToPool(particle);
+                }
+            }
+            
+            // Check collisions
+            checkCollisions();
+            
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // Game over
+        function gameOver() {
+            gameState = 'gameover';
+            
+            playSound(100, 1, 'sawtooth');
+            farcade.hapticFeedback();
+            
+            // Show game over screen
+            const ui = document.getElementById('ui');
+            ui.innerHTML += `
+                <rect x="0" y="0" width="500" height="750" fill="rgba(0,0,0,0.7)" />
+                <text x="250" y="350" fill="white" font-family="Arial, sans-serif" font-size="36" font-weight="bold" text-anchor="middle">
+                    GAME OVER
+                </text>
+                <text x="250" y="400" fill="white" font-family="Arial, sans-serif" font-size="24" text-anchor="middle">
+                    Final Score: ${score}
+                </text>
+            `;
+            
+            farcade.gameOver({ score });
+        }
+
+        // Reset game
+        function resetGame() {
+            gameState = 'running';
+            score = 0;
+            playerX = 250;
+            gameTime = 0;
+            difficulty = 1;
+            lastEnemySpawn = 0;
+            enemySpawnRate = 2000;
+            comboCount = 0;
+            lastKillTime = 0;
+            
+            // Clear all pools
+            for (let poolName in pools) {
+                for (let obj of pools[poolName]) {
+                    returnToPool(obj);
+                }
+            }
+            
+            // Clear DOM elements
+            document.getElementById('projectiles').innerHTML = '';
+            document.getElementById('enemies').innerHTML = '';
+            document.getElementById('fx').innerHTML = '';
+            
+            initPlayer();
+            updateUI();
+            
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // Touch controls
+        function setupControls() {
+            const svg = document.getElementById('gamesvg');
+            let touchStarted = false;
+            let lastTouchTime = 0;
+            
+            function handleTouch(e) {
+                e.preventDefault();
+                
+                if (gameState !== 'running') return;
+                
+                const now = Date.now();
+                if (now - lastTouchTime < 100) return; // Debounce
+                lastTouchTime = now;
+                
+                const rect = svg.getBoundingClientRect();
+                const touch = e.touches ? e.touches[0] : e;
+                const x = (touch.clientX - rect.left) / rect.width * 500;
+                const y = (touch.clientY - rect.top) / rect.height * 750;
+                
+                // Shooting (top third)
+                if (y < 250) {
+                    shoot();
+                }
+                // Movement (left/right half)
+                else if (x < 250) {
+                    // Move left
+                    playerX = Math.max(20, playerX - 40);
+                } else {
+                    // Move right
+                    playerX = Math.min(480, playerX + 40);
+                }
+                
+                // Update player position
+                const playerShip = document.getElementById('playerShip');
+                if (playerShip) {
+                    playerShip.setAttribute('transform', `translate(${playerX}, 620)`);
+                }
+            }
+            
+            svg.addEventListener('pointerdown', handleTouch, { passive: false });
+            svg.addEventListener('pointermove', (e) => {
+                if (touchStarted) handleTouch(e);
+            }, { passive: false });
+            svg.addEventListener('pointerup', () => {
+                touchStarted = false;
+            }, { passive: false });
+        }
+
+        // Initialize game
+        function initGame() {
+            initAudio();
+            initBackground();
+            initWaves();
+            initPlayer();
+            updateUI();
+            setupControls();
+            
+            gameState = 'running';
+            
+            // Farcade events
+            farcade.events.on('play_again', resetGame);
+            farcade.events.on('toggle_mute', () => {
+                isMuted = !isMuted;
+            });
+            
+            farcade.ready();
+            
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // Start game when DOM is loaded
+        document.addEventListener('DOMContentLoaded', initGame);
+    </script>
+</body>
+</html>
